@@ -1,0 +1,237 @@
+CREATE OR REPLACE TABLE `stately-timing-481017-u5.tbi.step1_admittime` AS
+SELECT 
+  t.subject_id,
+  t.hadm_id,
+  a.admittime
+FROM `stately-timing-481017-u5.tbi.TBi_3205` t
+INNER JOIN `physionet-data.mimiciv_3_1_hosp.admissions` a
+  ON t.subject_id = a.subject_id AND t.hadm_id = a.hadm_id;
+
+
+
+
+
+CREATE OR REPLACE TABLE `stately-timing-481017-u5.tbi.step2_features_48h` AS
+WITH admit AS (
+  SELECT subject_id, hadm_id, admittime
+  FROM `stately-timing-481017-u5.tbi.step1_admittime`
+),
+
+-- GCS: sum components per charttime first
+gcs_per_time AS (
+  SELECT 
+    a.subject_id,
+    a.hadm_id,
+    ce.charttime,
+    MAX(CASE WHEN ce.itemid = 220739 THEN ce.valuenum END) AS gcs_eye,
+    MAX(CASE WHEN ce.itemid = 223900 THEN ce.valuenum END) AS gcs_verbal,
+    MAX(CASE WHEN ce.itemid = 223901 THEN ce.valuenum END) AS gcs_motor
+  FROM `physionet-data.mimiciv_3_1_icu.chartevents` ce
+  INNER JOIN admit a
+    ON ce.subject_id = a.subject_id AND ce.hadm_id = a.hadm_id
+  WHERE ce.itemid IN (220739, 223900, 223901)
+    AND ce.charttime BETWEEN a.admittime AND DATETIME_ADD(a.admittime, INTERVAL 48 HOUR)
+    AND ce.valuenum IS NOT NULL
+  GROUP BY a.subject_id, a.hadm_id, ce.charttime
+),
+gcs_total AS (
+  SELECT 
+    subject_id,
+    hadm_id,
+    charttime,
+    gcs_eye + gcs_verbal + gcs_motor AS gcs_score
+  FROM gcs_per_time
+  WHERE gcs_eye IS NOT NULL AND gcs_verbal IS NOT NULL AND gcs_motor IS NOT NULL
+),
+gcs_agg AS (
+  SELECT 
+    subject_id,
+    hadm_id,
+    MIN(gcs_score) AS gcs_total_min,
+    ROUND(AVG(gcs_score), 2) AS gcs_total_avg,
+    MAX(gcs_score) AS gcs_total_max
+  FROM gcs_total
+  GROUP BY subject_id, hadm_id
+),
+
+-- VITALS from chartevents (excluding GCS)
+vitals AS (
+  SELECT 
+    a.subject_id,
+    a.hadm_id,
+    MIN(CASE WHEN ce.itemid = 220045 THEN ce.valuenum END) AS heart_rate_min,
+    ROUND(AVG(CASE WHEN ce.itemid = 220045 THEN ce.valuenum END), 2) AS heart_rate_avg,
+    MAX(CASE WHEN ce.itemid = 220045 THEN ce.valuenum END) AS heart_rate_max,
+
+    MIN(CASE WHEN ce.itemid IN (220210, 224690) THEN ce.valuenum END) AS resp_rate_min,
+    ROUND(AVG(CASE WHEN ce.itemid IN (220210, 224690) THEN ce.valuenum END), 2) AS resp_rate_avg,
+    MAX(CASE WHEN ce.itemid IN (220210, 224690) THEN ce.valuenum END) AS resp_rate_max,
+
+    MIN(CASE WHEN ce.itemid IN (220051, 220180) THEN ce.valuenum END) AS dbp_min,
+    ROUND(AVG(CASE WHEN ce.itemid IN (220051, 220180) THEN ce.valuenum END), 2) AS dbp_avg,
+    MAX(CASE WHEN ce.itemid IN (220051, 220180) THEN ce.valuenum END) AS dbp_max,
+
+    MIN(CASE WHEN ce.itemid = 220277 THEN ce.valuenum END) AS spo2_min,
+    ROUND(AVG(CASE WHEN ce.itemid = 220277 THEN ce.valuenum END), 2) AS spo2_avg,
+    MAX(CASE WHEN ce.itemid = 220277 THEN ce.valuenum END) AS spo2_max
+
+  FROM `physionet-data.mimiciv_3_1_icu.chartevents` ce
+  INNER JOIN admit a
+    ON ce.subject_id = a.subject_id AND ce.hadm_id = a.hadm_id
+  WHERE ce.itemid IN (220045, 220210, 224690, 220051, 220180, 220277)
+    AND ce.charttime BETWEEN a.admittime AND DATETIME_ADD(a.admittime, INTERVAL 48 HOUR)
+    AND ce.valuenum IS NOT NULL
+  GROUP BY a.subject_id, a.hadm_id
+),
+
+-- LABS from labevents
+labs AS (
+  SELECT 
+    a.subject_id,
+    a.hadm_id,
+    MIN(CASE WHEN le.itemid = 51301 THEN le.valuenum END) AS wbc_min,
+    ROUND(AVG(CASE WHEN le.itemid = 51301 THEN le.valuenum END), 2) AS wbc_avg,
+    MAX(CASE WHEN le.itemid = 51301 THEN le.valuenum END) AS wbc_max,
+
+    MIN(CASE WHEN le.itemid = 50868 THEN le.valuenum END) AS anion_gap_min,
+    ROUND(AVG(CASE WHEN le.itemid = 50868 THEN le.valuenum END), 2) AS anion_gap_avg,
+    MAX(CASE WHEN le.itemid = 50868 THEN le.valuenum END) AS anion_gap_max,
+
+    MIN(CASE WHEN le.itemid = 50912 THEN le.valuenum END) AS creatinine_min,
+    ROUND(AVG(CASE WHEN le.itemid = 50912 THEN le.valuenum END), 2) AS creatinine_avg,
+    MAX(CASE WHEN le.itemid = 50912 THEN le.valuenum END) AS creatinine_max,
+
+    MIN(CASE WHEN le.itemid IN (50931, 50809) THEN le.valuenum END) AS glucose_min,
+    ROUND(AVG(CASE WHEN le.itemid IN (50931, 50809) THEN le.valuenum END), 2) AS glucose_avg,
+    MAX(CASE WHEN le.itemid IN (50931, 50809) THEN le.valuenum END) AS glucose_max,
+
+    MIN(CASE WHEN le.itemid = 51265 THEN le.valuenum END) AS platelets_min,
+    ROUND(AVG(CASE WHEN le.itemid = 51265 THEN le.valuenum END), 2) AS platelets_avg,
+    MAX(CASE WHEN le.itemid = 51265 THEN le.valuenum END) AS platelets_max,
+
+    MIN(CASE WHEN le.itemid = 51274 THEN le.valuenum END) AS pt_min,
+    ROUND(AVG(CASE WHEN le.itemid = 51274 THEN le.valuenum END), 2) AS pt_avg,
+    MAX(CASE WHEN le.itemid = 51274 THEN le.valuenum END) AS pt_max,
+
+    MIN(CASE WHEN le.itemid = 51275 THEN le.valuenum END) AS ptt_min,
+    ROUND(AVG(CASE WHEN le.itemid = 51275 THEN le.valuenum END), 2) AS ptt_avg,
+    MAX(CASE WHEN le.itemid = 51275 THEN le.valuenum END) AS ptt_max,
+
+    MIN(CASE WHEN le.itemid = 50983 THEN le.valuenum END) AS sodium_min,
+    ROUND(AVG(CASE WHEN le.itemid = 50983 THEN le.valuenum END), 2) AS sodium_avg,
+    MAX(CASE WHEN le.itemid = 50983 THEN le.valuenum END) AS sodium_max,
+
+    MIN(CASE WHEN le.itemid = 50971 THEN le.valuenum END) AS potassium_min,
+    ROUND(AVG(CASE WHEN le.itemid = 50971 THEN le.valuenum END), 2) AS potassium_avg,
+    MAX(CASE WHEN le.itemid = 50971 THEN le.valuenum END) AS potassium_max
+
+  FROM `physionet-data.mimiciv_3_1_hosp.labevents` le
+  INNER JOIN admit a
+    ON le.subject_id = a.subject_id AND le.hadm_id = a.hadm_id
+  WHERE le.itemid IN (51301, 50868, 50912, 50931, 50809, 51265, 51274, 51275, 50983, 50971)
+    AND le.charttime BETWEEN a.admittime AND DATETIME_ADD(a.admittime, INTERVAL 48 HOUR)
+    AND le.valuenum IS NOT NULL
+  GROUP BY a.subject_id, a.hadm_id
+),
+
+-- RBC transfusion from inputevents
+rbc AS (
+  SELECT 
+    a.subject_id,
+    a.hadm_id,
+    COUNT(*) AS rbc_n,
+    MIN(ie.amount) AS rbc_min,
+    ROUND(AVG(ie.amount), 2) AS rbc_avg,
+    MAX(ie.amount) AS rbc_max,
+    MIN(ie.starttime) AS first_rbc_time,
+    MAX(ie.starttime) AS last_rbc_time
+  FROM `physionet-data.mimiciv_3_1_icu.inputevents` ie
+  INNER JOIN admit a
+    ON ie.subject_id = a.subject_id AND ie.hadm_id = a.hadm_id
+  WHERE ie.itemid = 225168
+    AND ie.starttime BETWEEN a.admittime AND DATETIME_ADD(a.admittime, INTERVAL 48 HOUR)
+    AND ie.amount IS NOT NULL AND ie.amount > 0
+  GROUP BY a.subject_id, a.hadm_id
+),
+
+-- Mechanical ventilation from procedureevents
+mech AS (
+  SELECT 
+    a.subject_id,
+    a.hadm_id,
+    1 AS mechanical
+  FROM `physionet-data.mimiciv_3_1_icu.procedureevents` pe
+  INNER JOIN admit a
+    ON pe.subject_id = a.subject_id AND pe.hadm_id = a.hadm_id
+  WHERE pe.itemid = 225792
+    AND pe.starttime BETWEEN a.admittime AND DATETIME_ADD(a.admittime, INTERVAL 48 HOUR)
+  GROUP BY a.subject_id, a.hadm_id
+)
+
+-- COMBINE everything
+SELECT 
+  a.subject_id,
+  a.hadm_id,
+  a.admittime,
+  -- Vitals
+  v.heart_rate_min, v.heart_rate_avg, v.heart_rate_max,
+  v.resp_rate_min, v.resp_rate_avg, v.resp_rate_max,
+  v.dbp_min, v.dbp_avg, v.dbp_max,
+  v.spo2_min, v.spo2_avg, v.spo2_max,
+  -- GCS
+  g.gcs_total_min, g.gcs_total_avg, g.gcs_total_max,
+  -- Labs
+  l.wbc_min, l.wbc_avg, l.wbc_max,
+  l.anion_gap_min, l.anion_gap_avg, l.anion_gap_max,
+  l.creatinine_min, l.creatinine_avg, l.creatinine_max,
+  l.glucose_min, l.glucose_avg, l.glucose_max,
+  l.platelets_min, l.platelets_avg, l.platelets_max,
+  l.pt_min, l.pt_avg, l.pt_max,
+  l.ptt_min, l.ptt_avg, l.ptt_max,
+  l.sodium_min, l.sodium_avg, l.sodium_max,
+  l.potassium_min, l.potassium_avg, l.potassium_max,
+  -- RBC
+  IFNULL(r.rbc_n, 0) AS rbc_n,
+  r.rbc_min, r.rbc_avg, r.rbc_max,
+  r.first_rbc_time, r.last_rbc_time,
+  -- Mechanical ventilation
+  IFNULL(m.mechanical, 0) AS mechanical
+FROM admit a
+LEFT JOIN vitals v ON a.subject_id = v.subject_id AND a.hadm_id = v.hadm_id
+LEFT JOIN gcs_agg g ON a.subject_id = g.subject_id AND a.hadm_id = g.hadm_id
+LEFT JOIN labs l ON a.subject_id = l.subject_id AND a.hadm_id = l.hadm_id
+LEFT JOIN rbc r ON a.subject_id = r.subject_id AND a.hadm_id = r.hadm_id
+LEFT JOIN mech m ON a.subject_id = m.subject_id AND a.hadm_id = m.hadm_id;
+
+
+CREATE OR REPLACE TABLE `stately-timing-481017-u5.tbi.step3_all_features_48h` AS
+SELECT 
+  -- Time-sensitive features (already 48h filtered)
+  s2.*,
+  
+  -- Static: Demographics
+  t.sex,
+  t.race,
+  t.MST,
+  
+  -- Static: Comorbidities
+  t.CHF,
+  t.liver,
+  t.chronic_lung_disease,
+  t.CVD,
+  t.malignant,
+  t.AKI,
+  t.CCI,
+  
+  -- Static: Severity scores (first 24hrs of ICU)
+  t.apsiii,
+  t.oasis,
+  t.sapsii,
+  t.sofa,
+  
+  -- ICU stay id
+  t.stay_id
+
+FROM `stately-timing-481017-u5.tbi.step2_features_48h` s2
+LEFT JOIN `stately-timing-481017-u5.tbi.TBi_3205` t
+  ON s2.subject_id = t.subject_id AND s2.hadm_id = t.hadm_id;
